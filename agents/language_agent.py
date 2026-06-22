@@ -1,39 +1,27 @@
-from agents.prompts.language_prompts import (
-    DETECT_LANGUAGE,
-    TRANSLATE_TO_ENGLISH,
-    TRANSLATE_TO_USER_LANG,
-)
-from agents.schemas.language_schemas import LanguageDetectionResponse
-from orchestrator.graph import AgentState
+import logging
+
+from agents.prompts.language_prompts import DETECT_AND_TRANSLATE, TRANSLATE_TO_USER_LANG
+from agents.schemas.language_schemas import LanguageAndTranslationResponse
+from orchestrator.state import AgentState
 from utils.constants import SUPPORTED_LANGUAGES
 from utils.gemini_client import generate_json, generate_text, transcribe_audio
 
+logger = logging.getLogger(__name__)
 
-async def _detect_language(text: str) -> str:
-    """
-    Ask Gemini to identify the BCP-47 language code of the given text.
-    Falls back to 'hi' (Hindi) if Gemini returns an unexpected value.
-    """
-    supported_codes = ", ".join(SUPPORTED_LANGUAGES.keys())
-    prompt = DETECT_LANGUAGE.format(codes=supported_codes, text=text)
+
+async def _detect_and_translate(text: str) -> tuple[str, str]:
+    codes = ", ".join(SUPPORTED_LANGUAGES.keys())
+    prompt = DETECT_AND_TRANSLATE.format(codes=codes, text=text)
     try:
-        result = await generate_json(prompt, response_schema=LanguageDetectionResponse)
-        return result.get("language_code", "hi")
+        result = await generate_json(prompt, response_schema=LanguageAndTranslationResponse)
+        lang = result.get("language_code", "hi")
+        english = result.get("english_text", text)
+        return lang, english
     except Exception:
-        return "hi"
-
-
-async def _translate_to_english(text: str, lang_code: str) -> str:
-    """Translate text from lang_code to English. Returns original if already English."""
-    if lang_code == "en":
-        return text
-    lang_name = SUPPORTED_LANGUAGES.get(lang_code, "Hindi")
-    prompt = TRANSLATE_TO_ENGLISH.format(lang_name=lang_name, text=text)
-    return await generate_text(prompt)
+        return "hi", text
 
 
 async def _translate_from_english(text: str, lang_code: str) -> str:
-    """Translate English text back to the user's language. No-op if English."""
     if lang_code == "en":
         return text
     lang_name = SUPPORTED_LANGUAGES.get(lang_code, "Hindi")
@@ -42,12 +30,7 @@ async def _translate_from_english(text: str, lang_code: str) -> str:
 
 
 async def run_incoming(state: AgentState) -> AgentState:
-    """
-    First-pass Language Agent node.
-
-    Handles audio transcription, language detection, and translation to English.
-    Updates state keys: raw_message, detected_language, translated_message.
-    """
+    logger.info("[language_in] started for user=%s", state["user_id"])
     raw_message = state["raw_message"]
 
     if state["message_type"] == "audio" and state.get("audio_bytes"):
@@ -56,9 +39,9 @@ async def run_incoming(state: AgentState) -> AgentState:
             mime_type=state.get("audio_mime_type", "audio/ogg"),
         )
 
-    detected_language = await _detect_language(raw_message)
-    translated_message = await _translate_to_english(raw_message, detected_language)
+    detected_language, translated_message = await _detect_and_translate(raw_message)
 
+    logger.info("[language_in] done  lang=%s user=%s", detected_language, state["user_id"])
     return {
         **state,
         "raw_message": raw_message,
@@ -68,15 +51,11 @@ async def run_incoming(state: AgentState) -> AgentState:
 
 
 async def run_outgoing(state: AgentState) -> AgentState:
-    """
-    Second-pass Language Agent node — last step in the pipeline.
-
-    Translates the assembled English response back to the user's language.
-    Updates state key: final_response_translated.
-    """
+    logger.info("[language_out] started for user=%s", state["user_id"])
     final_response = state.get("final_response", "")
 
     if not final_response:
+        logger.warning("[language_out] no final_response to translate for user=%s", state["user_id"])
         return {**state, "final_response_translated": ""}
 
     translated = await _translate_from_english(
@@ -84,4 +63,5 @@ async def run_outgoing(state: AgentState) -> AgentState:
         lang_code=state.get("detected_language", "hi"),
     )
 
+    logger.info("[language_out] done for user=%s", state["user_id"])
     return {**state, "final_response_translated": translated}

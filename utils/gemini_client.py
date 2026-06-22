@@ -1,98 +1,98 @@
 import asyncio
 import base64
-from pathlib import Path
+import json
+import logging
+import re
 import google.generativeai as genai
 from google.generativeai.types import GenerationConfig
+from google.api_core.exceptions import ResourceExhausted
 
 from utils.config import settings
 
-# Initialise SDK once at import time 
+logger = logging.getLogger(__name__)
 
 genai.configure(api_key=settings.gemini_api_key)
 
-# Model names
-_TEXT_MODEL = "gemini-2.5-flash"          # fast, multilingual, strong reasoning
+_TEXT_MODEL = "gemini-2.5-flash"
 _EMBEDDING_MODEL = "models/text-embedding-004"
-_AUDIO_MODEL = "gemini-2.5-flash"         # supports inline audio blobs
+_AUDIO_MODEL = "gemini-2.5-flash"
+
+_MAX_RETRIES = 1
+_DEFAULT_RETRY_DELAY = 20.0
+_REQUEST_TIMEOUT = 30  # seconds — Gemini SDK per-call timeout
 
 
-# Singleton model instances 
+def _parse_retry_delay(exc: ResourceExhausted) -> float:
+    match = re.search(r"retry in ([\d.]+)s", str(exc))
+    return float(match.group(1)) + 1.0 if match else _DEFAULT_RETRY_DELAY
+
+
+async def _with_retry(coro_fn):
+    await asyncio.sleep(14)  # pace calls to stay within free-tier rate limits
+    for attempt in range(_MAX_RETRIES):
+        try:
+            logger.debug("Gemini call attempt %d/%d", attempt + 1, _MAX_RETRIES)
+            return await coro_fn()
+        except ResourceExhausted as exc:
+            if attempt == _MAX_RETRIES - 1:
+                logger.error("Gemini rate limit — all %d retries exhausted", _MAX_RETRIES)
+                raise
+            delay = _parse_retry_delay(exc)
+            logger.warning("Gemini rate limit hit — waiting %.0fs before retry %d/%d",
+                           delay, attempt + 2, _MAX_RETRIES)
+            await asyncio.sleep(delay)
+
 
 _text_model: genai.GenerativeModel | None = None
 _audio_model: genai.GenerativeModel | None = None
 
 
 def _get_text_model() -> genai.GenerativeModel:
-    """Return the singleton text generation model."""
     global _text_model
     if _text_model is None:
         _text_model = genai.GenerativeModel(
             model_name=_TEXT_MODEL,
-            generation_config=GenerationConfig(
-                temperature=0.3,   # low temp — factual financial context
-                max_output_tokens=1024,
-            ),
+            generation_config=GenerationConfig(temperature=0.3, max_output_tokens=1024),
         )
     return _text_model
 
 
 def _get_audio_model() -> genai.GenerativeModel:
-    """Return the singleton audio-understanding model."""
     global _audio_model
     if _audio_model is None:
         _audio_model = genai.GenerativeModel(model_name=_AUDIO_MODEL)
     return _audio_model
 
 
-# Public async API
-
-
 async def generate_text(prompt: str, system_instruction: str | None = None) -> str:
-    """
-    Generate a text response from Gemini.
-
-    Args:
-        prompt: The user/agent prompt (always in English internally).
-        system_instruction: Optional system-level instruction prepended to the prompt.
-
-    Returns:
-        The model's text response as a plain string.
-    """
     model = _get_text_model()
+    full_prompt = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
 
-    def _call() -> str:
-        if system_instruction:
-            full_prompt = f"{system_instruction}\n\n{prompt}"
-        else:
-            full_prompt = prompt
-        response = model.generate_content(full_prompt)
-        return response.text.strip()
+    async def _attempt():
+        def _call() -> str:
+            response = model.generate_content(
+                full_prompt,
+                request_options={"timeout": _REQUEST_TIMEOUT},
+            )
+            return response.text.strip()
+        return await asyncio.to_thread(_call)
 
-    return await asyncio.to_thread(_call)
+    return await _with_retry(_attempt)
 
 
 async def get_embedding(text: str) -> list[float]:
-    """
-    Generate a 768-dimensional embedding vector using text-embedding-004.
+    async def _attempt():
+        def _call() -> list[float]:
+            result = genai.embed_content(
+                model=_EMBEDDING_MODEL,
+                content=text,
+                task_type="retrieval_document",
+                request_options={"timeout": _REQUEST_TIMEOUT},
+            )
+            return result["embedding"]
+        return await asyncio.to_thread(_call)
 
-    Used by the Profile Agent to embed financial context summaries
-    for later RAG retrieval.
-
-    Args:
-        text: The text to embed (always English).
-
-    Returns:
-        A list of 768 floats representing the embedding vector.
-    """
-    def _call() -> list[float]:
-        result = genai.embed_content(
-            model=_EMBEDDING_MODEL,
-            content=text,
-            task_type="retrieval_document",
-        )
-        return result["embedding"]
-
-    return await asyncio.to_thread(_call)
+    return await _with_retry(_attempt)
 
 
 async def generate_json(
@@ -100,70 +100,49 @@ async def generate_json(
     system_instruction: str | None = None,
     response_schema=None,
 ) -> dict | list:
-    """
-    Generate a strictly-structured JSON response from Gemini.
-
-    Combines response_mime_type="application/json" (no extra text)
-    with an optional response_schema (enforces exact field names and types).
-
-    Args:
-        prompt: The extraction/analysis prompt (always in English).
-        system_instruction: Optional system-level instruction.
-        response_schema: A Pydantic model class whose shape Gemini must match exactly.
-                         If None, only the JSON MIME type is enforced.
-
-    Returns:
-        Parsed Python dict or list from Gemini's JSON response.
-    """
-    import json
-
     model = _get_text_model()
+    full_prompt = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
 
-    def _call() -> dict | list:
-        full_prompt = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
-        config = GenerationConfig(
-            response_mime_type="application/json",
-            response_schema=response_schema,  # None is a safe no-op
-            temperature=0.1,
-            max_output_tokens=1024,
-        )
-        response = model.generate_content(full_prompt, generation_config=config)
-        return json.loads(response.text)
+    async def _attempt():
+        def _call() -> dict | list:
+            config_kwargs: dict = {
+                "response_mime_type": "application/json",
+                "temperature": 0.1,
+                "max_output_tokens": 1024,
+            }
+            if response_schema is not None:
+                config_kwargs["response_schema"] = response_schema
+            response = model.generate_content(
+                full_prompt,
+                generation_config=GenerationConfig(**config_kwargs),
+                request_options={"timeout": _REQUEST_TIMEOUT},
+            )
+            return json.loads(response.text)
+        return await asyncio.to_thread(_call)
 
-    return await asyncio.to_thread(_call)
+    return await _with_retry(_attempt)
 
 
 async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
-    """
-    Transcribe a WhatsApp voice message to text using Gemini Audio Understanding.
-
-    WhatsApp voice notes arrive as OGG/Opus audio. The bytes are sent inline
-    as a base64-encoded blob — no file upload required.
-
-    Args:
-        audio_bytes: Raw audio bytes downloaded from the WhatsApp media endpoint.
-        mime_type:   MIME type of the audio (default: audio/ogg for WhatsApp voice notes).
-
-    Returns:
-        Transcribed text in the user's original language.
-        Language detection + translation is handled separately by the Language Agent.
-    """
     model = _get_audio_model()
-
-    def _call() -> str:
-        audio_part = {
-            "inline_data": {
-                "mime_type": mime_type,
-                "data": base64.b64encode(audio_bytes).decode("utf-8"),
-            }
+    audio_part = {
+        "inline_data": {
+            "mime_type": mime_type,
+            "data": base64.b64encode(audio_bytes).decode("utf-8"),
         }
-        response = model.generate_content(
-            [
-                audio_part,
-                "Transcribe this audio message exactly as spoken. "
-                "Do not translate — output the original spoken language.",
-            ]
-        )
-        return response.text.strip()
+    }
 
-    return await asyncio.to_thread(_call)
+    async def _attempt():
+        def _call() -> str:
+            response = model.generate_content(
+                [
+                    audio_part,
+                    "Transcribe this audio message exactly as spoken. "
+                    "Do not translate — output the original spoken language.",
+                ],
+                request_options={"timeout": _REQUEST_TIMEOUT},
+            )
+            return response.text.strip()
+        return await asyncio.to_thread(_call)
+
+    return await _with_retry(_attempt)

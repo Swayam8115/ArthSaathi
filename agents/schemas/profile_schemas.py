@@ -14,3 +14,8 @@ class ExtractedEventsResponse(BaseModel):
 
 class PersonaResponse(BaseModel):
     persona_type: Literal["salaried", "gig", "farmer", "freelancer"] | None
+
+
+class CombinedProfileResponse(BaseModel):
+    events: list[ExtractedEvent]
+    persona_type: Literal["salaried", "gig", "farmer", "freelancer"] | None

@@ -1,8 +1,9 @@
 import json
+import logging
 from datetime import datetime, timezone
 
-from agents.prompts.profile_prompts import EXTRACT_FINANCIAL_EVENTS, INFER_PERSONA
-from agents.schemas.profile_schemas import ExtractedEventsResponse, PersonaResponse
+from agents.prompts.profile_prompts import EXTRACT_AND_INFER
+from agents.schemas.profile_schemas import CombinedProfileResponse
 from db.supabase_client import AsyncSessionFactory
 from db.user_profile import (
     FinancialEventCreate,
@@ -12,41 +13,22 @@ from db.user_profile import (
     get_or_create_profile,
     update_profile,
 )
-from orchestrator.graph import AgentState
+from orchestrator.state import AgentState
 from utils.gemini_client import generate_json
 
+logger = logging.getLogger(__name__)
 
-# Internal helpers 
 
-
-async def _extract_events(message: str) -> list[dict]:
-    """
-    Ask Gemini to extract financial events from the English message.
-    Returns a list of event dicts; falls back to [] on any parse error.
-    """
-    prompt = EXTRACT_FINANCIAL_EVENTS.format(message=message)
+async def _extract_and_infer(message: str) -> tuple[list[dict], str | None]:
+    prompt = EXTRACT_AND_INFER.format(message=message)
     try:
-        result = await generate_json(prompt, response_schema=ExtractedEventsResponse)
-        if isinstance(result, dict) and "events" in result:
-            return result["events"]
-        return []
-    except (json.JSONDecodeError, Exception):
-        return []
-
-
-async def _infer_persona(message: str) -> str | None:
-    """
-    Ask Gemini to infer the user's persona type from the message.
-    Returns one of the valid persona strings, or None if inconclusive.
-    """
-    prompt = INFER_PERSONA.format(message=message)
-    try:
-        result = await generate_json(prompt, response_schema=PersonaResponse)
+        result = await generate_json(prompt, response_schema=CombinedProfileResponse)
+        events = result.get("events", []) if isinstance(result, dict) else []
         persona = result.get("persona_type") if isinstance(result, dict) else None
-        valid = {"salaried", "gig", "farmer", "freelancer"}
-        return persona if persona in valid else None
-    except Exception:
-        return None
+        valid_personas = {"salaried", "gig", "farmer", "freelancer"}
+        return events, (persona if persona in valid_personas else None)
+    except (json.JSONDecodeError, Exception):
+        return [], None
 
 
 def _build_profile_update(
@@ -54,12 +36,6 @@ def _build_profile_update(
     events: list[dict],
     inferred_persona: str | None,
 ) -> tuple[ProfileUpdate, list[LoanRecord]]:
-    """
-    Compute the ProfileUpdate and any new LoanRecords from the extracted events.
-
-    Income and expense amounts are accumulated onto the current monthly totals.
-    Savings is set to the reported value (most recent self-report wins).
-    """
     income_delta = sum(
         e.get("amount") or 0 for e in events if e.get("event_type") == "income"
     )
@@ -102,42 +78,24 @@ def _build_profile_update(
     return update, new_loans
 
 
-# LangGraph node function
-
-
 async def run(state: AgentState) -> AgentState:
-    """
-    Profile Agent node.
-
-    Reads the English-translated message, extracts financial events,
-    updates the Supabase profile, and writes a profile snapshot to state.
-
-    Updates state keys: profile, extracted_events.
-    """
     user_id = state["user_id"]
     message = state.get("translated_message", "")
+    logger.info("[profile] started for user=%s", user_id)
 
-    # Run extraction and persona inference concurrently
-    import asyncio
-    events, inferred_persona = await asyncio.gather(
-        _extract_events(message),
-        _infer_persona(message),
-    )
+    # Single Gemini call: extract events + infer persona together
+    events, inferred_persona = await _extract_and_infer(message)
 
     async with AsyncSessionFactory() as session:
-        # Get or create the user profile
         profile = await get_or_create_profile(
             session, user_id, language=state.get("detected_language", "hi")
         )
 
-        # Compute updates from extracted events
         update, _ = _build_profile_update(profile, events, inferred_persona)
 
-        # Persist profile updates (only if there's something to update)
         if update.model_dump(exclude_none=True):
             profile = await update_profile(session, user_id, update)
 
-        # Persist each financial event to the events table
         for event in events:
             event_type = event.get("event_type", "query")
             if event_type not in {"income", "expense", "loan", "savings", "query"}:
@@ -153,7 +111,6 @@ async def run(state: AgentState) -> AgentState:
                 ),
             )
 
-        # Snapshot the profile as a plain dict for downstream agents
         profile_snapshot = {
             "user_id": profile.user_id,
             "language": profile.language,
@@ -168,6 +125,7 @@ async def run(state: AgentState) -> AgentState:
             "seekho_level": profile.seekho_level or 0,
         }
 
+    logger.info("[profile] done  events=%d user=%s", len(events), user_id)
     return {
         **state,
         "profile": profile_snapshot,

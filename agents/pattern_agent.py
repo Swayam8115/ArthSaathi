@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone, timedelta
 
 from agents.prompts.pattern_prompts import (
@@ -9,9 +10,11 @@ from agents.prompts.pattern_prompts import (
 from agents.schemas.pattern_schemas import SemanticRiskResponse
 from db.supabase_client import AsyncSessionFactory
 from db.user_profile import get_recent_events
-from orchestrator.graph import AgentState
+from orchestrator.state import AgentState
 from utils.constants import ESCALATION_MESSAGE, NO_SAVINGS_THRESHOLD_DAYS, NUDGE_DISCLAIMER
 from utils.gemini_client import generate_json, generate_text
+
+logger = logging.getLogger(__name__)
 
 
 # Rule-based pattern checks 
@@ -124,6 +127,7 @@ async def run(state: AgentState) -> AgentState:
     user_id = state["user_id"]
     profile = state.get("profile", {})
     message = state.get("translated_message", "")
+    logger.info("[pattern] started for user=%s", user_id)
 
     # Fetch recent events from DB and run semantic check concurrently
     async with AsyncSessionFactory() as session:
@@ -154,13 +158,12 @@ async def run(state: AgentState) -> AgentState:
         nudge_type = "loan_warning" if "predatory_loan" in all_flags else "distress_escalation"
         nudge_content = await _generate_interrupt_nudge(all_flags)
 
+    logger.info("[pattern] done  flags=%s interrupt=%s user=%s", all_flags, should_interrupt, user_id)
     return {
         **state,
         "risk_flags": all_flags,
         "interrupt": should_interrupt,
         "nudge_type": nudge_type,
         "nudge_content": nudge_content,
-        # Set final_response now so Language Agent (outgoing) can translate it
-        # directly — Nudge Agent is skipped on interrupt path
         "final_response": nudge_content or "",
     }

@@ -24,3 +24,14 @@ logs/
 
 # Docker
 *.override.yml
+
+# Celery beat runtime files
+celerybeat-schedule
+celerybeat-schedule.db
+celerybeat.pid
+
+# OS
+.DS_Store
+Thumbs.db
+
+test_pipeline.py

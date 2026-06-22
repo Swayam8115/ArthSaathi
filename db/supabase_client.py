@@ -21,10 +21,11 @@ def get_supabase() -> Client:
 
 _engine = create_async_engine(
     settings.database_url,
-    pool_pre_ping=True,   # validate connections before use
+    pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
-    echo=False,           # set True locally to log SQL
+    echo=False,
+    connect_args={"ssl": "require"},
 )
 
 AsyncSessionFactory: async_sessionmaker[AsyncSession] = async_sessionmaker(

@@ -1,20 +1,16 @@
-DETECT_LANGUAGE = """\
-Identify the language of the following text.
-Reply with ONLY the BCP-47 language code from this list: {codes}.
-If the text is a mix of languages (code-switching), return the dominant one.
-If you cannot determine the language, return "hi" as the default.
+DETECT_AND_TRANSLATE = """\
+Detect the language of the following text and translate it to English in one step.
 
-Text:
-{text}
-"""
+Supported language codes: {codes}
 
-TRANSLATE_TO_ENGLISH = """\
-Translate the following message to English.
-Preserve the exact meaning, especially financial figures, amounts, and terms.
-Do not add explanations. Return only the translated text.
+Rules:
+- language_code: BCP-47 code from the supported list above; if mixed languages use the dominant one
+- english_text: translate to English preserving all financial figures, amounts, and numbers exactly;
+  if the text is already in English return it unchanged
 
-Original ({lang_name}):
-{text}
+Text: "{text}"
+
+Return ONLY the JSON object.
 """
 
 TRANSLATE_TO_USER_LANG = """\
