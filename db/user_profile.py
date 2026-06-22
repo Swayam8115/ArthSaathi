@@ -4,11 +4,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import FinancialEvent, UserProfile
-
-
-# Pydantic schemas for input validation 
-# (used by agents when writing to the db — keeps the ORM layer clean)
-
 from pydantic import BaseModel, Field
 
 

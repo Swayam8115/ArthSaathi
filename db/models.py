@@ -1,15 +1,3 @@
-"""
-SQLAlchemy 2.x async ORM models mirroring the Supabase schema.
-
-Tables:
-  - UserProfile       → user_profiles
-  - FinancialEvent    → financial_events
-
-ProfileEmbedding is handled via raw Supabase RPC (pgvector) rather than ORM
-because SQLAlchemy does not natively support the `vector` column type without
-the pgvector-sqlalchemy extension.
-"""
-
 import uuid
 from datetime import datetime
 from typing import Any
