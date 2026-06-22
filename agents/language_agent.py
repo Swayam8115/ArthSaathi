@@ -3,21 +3,24 @@ from agents.prompts.language_prompts import (
     TRANSLATE_TO_ENGLISH,
     TRANSLATE_TO_USER_LANG,
 )
+from agents.schemas.language_schemas import LanguageDetectionResponse
 from orchestrator.graph import AgentState
 from utils.constants import SUPPORTED_LANGUAGES
-from utils.gemini_client import generate_text, transcribe_audio
+from utils.gemini_client import generate_json, generate_text, transcribe_audio
 
 
 async def _detect_language(text: str) -> str:
     """
     Ask Gemini to identify the BCP-47 language code of the given text.
-    Falls back to 'hi' (Hindi) if the response is unrecognised.
+    Falls back to 'hi' (Hindi) if Gemini returns an unexpected value.
     """
     supported_codes = ", ".join(SUPPORTED_LANGUAGES.keys())
     prompt = DETECT_LANGUAGE.format(codes=supported_codes, text=text)
-    raw = await generate_text(prompt)
-    detected = raw.strip().lower().split()[0]  # take first token only
-    return detected if detected in SUPPORTED_LANGUAGES else "hi"
+    try:
+        result = await generate_json(prompt, response_schema=LanguageDetectionResponse)
+        return result.get("language_code", "hi")
+    except Exception:
+        return "hi"
 
 
 async def _translate_to_english(text: str, lang_code: str) -> str:

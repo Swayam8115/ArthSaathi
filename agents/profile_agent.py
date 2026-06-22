@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 
 from agents.prompts.profile_prompts import EXTRACT_FINANCIAL_EVENTS, INFER_PERSONA
+from agents.schemas.profile_schemas import ExtractedEventsResponse, PersonaResponse
 from db.supabase_client import AsyncSessionFactory
 from db.user_profile import (
     FinancialEventCreate,
@@ -25,8 +26,10 @@ async def _extract_events(message: str) -> list[dict]:
     """
     prompt = EXTRACT_FINANCIAL_EVENTS.format(message=message)
     try:
-        result = await generate_json(prompt)
-        return result if isinstance(result, list) else []
+        result = await generate_json(prompt, response_schema=ExtractedEventsResponse)
+        if isinstance(result, dict) and "events" in result:
+            return result["events"]
+        return []
     except (json.JSONDecodeError, Exception):
         return []
 
@@ -38,7 +41,7 @@ async def _infer_persona(message: str) -> str | None:
     """
     prompt = INFER_PERSONA.format(message=message)
     try:
-        result = await generate_json(prompt)
+        result = await generate_json(prompt, response_schema=PersonaResponse)
         persona = result.get("persona_type") if isinstance(result, dict) else None
         valid = {"salaried", "gig", "farmer", "freelancer"}
         return persona if persona in valid else None

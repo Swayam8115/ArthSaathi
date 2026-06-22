@@ -95,16 +95,22 @@ async def get_embedding(text: str) -> list[float]:
     return await asyncio.to_thread(_call)
 
 
-async def generate_json(prompt: str, system_instruction: str | None = None) -> dict | list:
+async def generate_json(
+    prompt: str,
+    system_instruction: str | None = None,
+    response_schema=None,
+) -> dict | list:
     """
-    Generate a structured JSON response from Gemini.
+    Generate a strictly-structured JSON response from Gemini.
 
-    Uses response_mime_type="application/json" to force valid, parseable output.
-    Used by Profile Agent (event extraction) and Pattern Agent (risk analysis).
+    Combines response_mime_type="application/json" (no extra text)
+    with an optional response_schema (enforces exact field names and types).
 
     Args:
         prompt: The extraction/analysis prompt (always in English).
         system_instruction: Optional system-level instruction.
+        response_schema: A Pydantic model class whose shape Gemini must match exactly.
+                         If None, only the JSON MIME type is enforced.
 
     Returns:
         Parsed Python dict or list from Gemini's JSON response.
@@ -115,14 +121,13 @@ async def generate_json(prompt: str, system_instruction: str | None = None) -> d
 
     def _call() -> dict | list:
         full_prompt = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
-        response = model.generate_content(
-            full_prompt,
-            generation_config=GenerationConfig(
-                response_mime_type="application/json",
-                temperature=0.1,        # near-zero temp for deterministic extraction
-                max_output_tokens=1024,
-            ),
+        config = GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=response_schema,  # None is a safe no-op
+            temperature=0.1,
+            max_output_tokens=1024,
         )
+        response = model.generate_content(full_prompt, generation_config=config)
         return json.loads(response.text)
 
     return await asyncio.to_thread(_call)
