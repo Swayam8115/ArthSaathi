@@ -160,4 +160,7 @@ async def run(state: AgentState) -> AgentState:
         "interrupt": should_interrupt,
         "nudge_type": nudge_type,
         "nudge_content": nudge_content,
+        # Set final_response now so Language Agent (outgoing) can translate it
+        # directly — Nudge Agent is skipped on interrupt path
+        "final_response": nudge_content or "",
     }
