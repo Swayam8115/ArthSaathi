@@ -201,9 +201,9 @@ celery -A scheduler.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-s
 
 ## Free Tier Notes
 
-- Uses **Gemini 2.0 Flash** (15 RPM free tier)
+- Uses **Gemini 2.5 Flash** (5 RPM free tier)
 - Pipeline makes **5 Gemini calls** per message
-- A 5-second delay between calls keeps usage within the free tier
+- A 14-second delay between calls keeps usage within the free tier
 - Expect ~30–45 second response time per message on free tier
 - For production, enable billing on Google AI Studio (~₹0.02/message)
 
