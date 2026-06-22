@@ -95,6 +95,39 @@ async def get_embedding(text: str) -> list[float]:
     return await asyncio.to_thread(_call)
 
 
+async def generate_json(prompt: str, system_instruction: str | None = None) -> dict | list:
+    """
+    Generate a structured JSON response from Gemini.
+
+    Uses response_mime_type="application/json" to force valid, parseable output.
+    Used by Profile Agent (event extraction) and Pattern Agent (risk analysis).
+
+    Args:
+        prompt: The extraction/analysis prompt (always in English).
+        system_instruction: Optional system-level instruction.
+
+    Returns:
+        Parsed Python dict or list from Gemini's JSON response.
+    """
+    import json
+
+    model = _get_text_model()
+
+    def _call() -> dict | list:
+        full_prompt = f"{system_instruction}\n\n{prompt}" if system_instruction else prompt
+        response = model.generate_content(
+            full_prompt,
+            generation_config=GenerationConfig(
+                response_mime_type="application/json",
+                temperature=0.1,        # near-zero temp for deterministic extraction
+                max_output_tokens=1024,
+            ),
+        )
+        return json.loads(response.text)
+
+    return await asyncio.to_thread(_call)
+
+
 async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
     """
     Transcribe a WhatsApp voice message to text using Gemini Audio Understanding.
