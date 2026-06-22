@@ -1,6 +1,6 @@
 # ArthSaathi
 
-> "ArthSaathi doesn't track your money — it helps you understand it, one conversation at a time."
+> "ArthSaathi doesn't track your money, it helps you understand it, one conversation at a time."
 
 A WhatsApp-first Agentic AI for financial literacy, built for India's diverse and underserved population.
 
