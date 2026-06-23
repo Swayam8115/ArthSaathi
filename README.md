@@ -48,7 +48,7 @@ Meta Cloud API  ──POST──►  FastAPI Webhook  ──►  LangGraph Pipel
 |---|---|
 | API | FastAPI + Uvicorn |
 | Orchestration | LangGraph (StateGraph) |
-| LLM | Gemini 2.0 Flash (Google AI) |
+| LLM | Gemini 2.5 Flash (Google AI) |
 | Database | Supabase (PostgreSQL + pgvector) |
 | ORM | SQLAlchemy 2.x async |
 | Task Queue | Celery + Redis |
